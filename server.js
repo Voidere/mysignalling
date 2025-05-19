@@ -1,13 +1,13 @@
 const WebSocket = require("ws");
 
 // Create WebSocket server
-const wss = new WebSocket.Server({ port: 8080 });
+const server = new WebSocket.Server({ port: 8080 });
 
 // Store active hosts
 const hosts = new Map();
 
 // WebSocket connection handling
-wss.on("connection", (ws) => {
+server.on("connection", (ws) => {
   console.log("New client connected");
 
   ws.on("message", (message) => {
@@ -15,38 +15,84 @@ wss.on("connection", (ws) => {
       const data = JSON.parse(message);
       console.log("Received:", data);
 
-      if (data.register_host) {
-        // Register a new host
-        const hostInfo = data.register_host;
-        hosts.set(ws, {
-          ip: hostInfo.ip,
-          port: hostInfo.port,
-          playerName: hostInfo.player_name,
-        });
-        console.log("Host registered:", hostInfo);
-        ws.send(JSON.stringify({ status: "host_registered" }));
-      } else if (data.looking_for_game) {
-        // Client is looking for a game
-        if (hosts.size > 0) {
-          // Send the first available host
-          const [hostWs, hostInfo] = hosts.entries().next().value;
-          ws.send(JSON.stringify({ host: hostInfo }));
-        } else {
-          ws.send(JSON.stringify({ status: "no_hosts" }));
-        }
+      switch (data.type) {
+        case "register_host":
+          // Store host information
+          hosts.set(ws, {
+            ip: data.ip,
+            port: data.port,
+            player_name: data.player_name,
+            timestamp: Date.now(),
+          });
+          console.log("Host registered:", data.ip, data.port);
+
+          // Send confirmation to host
+          ws.send(
+            JSON.stringify({
+              type: "host_registered",
+              success: true,
+            })
+          );
+          break;
+
+        case "get_hosts":
+          // Send list of available hosts
+          const hostList = Array.from(hosts.values()).map((host) => ({
+            ip: host.ip,
+            port: host.port,
+            player_name: host.player_name,
+          }));
+
+          ws.send(
+            JSON.stringify({
+              type: "host_list",
+              hosts: hostList,
+            })
+          );
+          break;
+
+        case "look_for_game":
+          // Find first available host
+          if (hosts.size > 0) {
+            const [hostWs, hostInfo] = hosts.entries().next().value;
+            console.log("Found host:", hostInfo);
+
+            // Send host info to the joining player
+            ws.send(
+              JSON.stringify({
+                type: "host_info",
+                ip: hostInfo.ip,
+                port: hostInfo.port,
+                player_name: hostInfo.player_name,
+              })
+            );
+          } else {
+            // No hosts available
+            ws.send(
+              JSON.stringify({
+                type: "no_hosts",
+              })
+            );
+          }
+          break;
       }
     } catch (error) {
       console.error("Error processing message:", error);
-      ws.send(JSON.stringify({ error: "Invalid message format" }));
+      ws.send(
+        JSON.stringify({
+          type: "error",
+          message: "Invalid message format",
+        })
+      );
     }
   });
 
   ws.on("close", () => {
-    console.log("Client disconnected");
     // Remove host if this connection was hosting
     if (hosts.has(ws)) {
+      const hostInfo = hosts.get(ws);
+      console.log("Host disconnected:", hostInfo.ip, hostInfo.port);
       hosts.delete(ws);
-      console.log("Host removed");
     }
   });
 
@@ -55,4 +101,17 @@ wss.on("connection", (ws) => {
   });
 });
 
-console.log("WebSocket server is running on ws://localhost:8080");
+// Clean up stale hosts every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [ws, hostInfo] of hosts.entries()) {
+    if (now - hostInfo.timestamp > 5 * 60 * 1000) {
+      // 5 minutes
+      console.log("Removing stale host:", hostInfo.ip, hostInfo.port);
+      hosts.delete(ws);
+      ws.close();
+    }
+  }
+}, 5 * 60 * 1000);
+
+console.log("Signaling server started on port 8080");

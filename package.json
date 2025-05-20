@@ -1,7 +1,7 @@
 {
-  "name": "signaling-server",
+  "name": "game-signaling-server",
   "version": "1.0.0",
-  "description": "Secure WebSocket signaling server for multiplayer game",
+  "description": "WebSocket signaling server for multiplayer game",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"

@@ -1,41 +1,110 @@
-// signaling-server.js (Node.js)
 const WebSocket = require("ws");
-const server = new WebSocket.Server({ port: 8080 });
 
-let hostInfo = null; // { ip: '123.45.67.89', port: 2450, player_name: 'HostName' }
+const wss = new WebSocket.Server({ port: 8080 });
 
-server.on("connection", (socket) => {
-  console.log("Client connected");
+// Store connected clients and their rooms
+const clients = new Map();
+const rooms = new Map();
 
-  socket.on("message", (msg) => {
-    try {
-      const data = JSON.parse(msg);
+wss.on("connection", (ws) => {
+  const clientId = generateId();
+  clients.set(clientId, ws);
 
-      if (data.action === "looking_for_game") {
-        if (hostInfo) {
-          socket.send(JSON.stringify({ host: hostInfo }));
-        } else {
-          socket.send(JSON.stringify({ action: "no_hosts" }));
-        }
-      }
+  console.log(`Client ${clientId} connected`);
 
-      if (data.register_host) {
-        hostInfo = data.register_host;
-        console.log("Host registered:", hostInfo);
-      }
+  ws.on("message", (message) => {
+    const data = JSON.parse(message);
 
-      if (data.action === "unregister_host") {
-        hostInfo = null;
-        console.log("Host unregistered");
-      }
-    } catch (e) {
-      console.error("Invalid message", e);
+    switch (data.type) {
+      case "create_room":
+        createRoom(clientId, data.roomId);
+        break;
+      case "join_room":
+        joinRoom(clientId, data.roomId);
+        break;
+      case "offer":
+      case "answer":
+      case "ice_candidate":
+        forwardMessage(clientId, data);
+        break;
     }
   });
 
-  socket.on("close", () => {
-    console.log("Client disconnected");
+  ws.on("close", () => {
+    console.log(`Client ${clientId} disconnected`);
+    removeClient(clientId);
   });
 });
 
-console.log("WebSocket signaling server running on ws://localhost:8080");
+function generateId() {
+  return Math.random().toString(36).substr(2, 9);
+}
+
+function createRoom(clientId, roomId) {
+  rooms.set(roomId, new Set([clientId]));
+  clients.get(clientId).send(
+    JSON.stringify({
+      type: "room_created",
+      roomId: roomId,
+    })
+  );
+}
+
+function joinRoom(clientId, roomId) {
+  const room = rooms.get(roomId);
+  if (room) {
+    room.add(clientId);
+    // Notify all clients in the room about the new peer
+    room.forEach((peerId) => {
+      if (peerId !== clientId) {
+        clients.get(peerId).send(
+          JSON.stringify({
+            type: "peer_joined",
+            peerId: clientId,
+          })
+        );
+      }
+    });
+  }
+}
+
+function forwardMessage(senderId, data) {
+  const room = Array.from(rooms.values()).find((r) => r.has(senderId));
+  if (room) {
+    room.forEach((peerId) => {
+      if (peerId !== senderId) {
+        clients.get(peerId).send(
+          JSON.stringify({
+            ...data,
+            senderId: senderId,
+          })
+        );
+      }
+    });
+  }
+}
+
+function removeClient(clientId) {
+  clients.delete(clientId);
+  // Remove client from all rooms
+  rooms.forEach((room, roomId) => {
+    if (room.has(clientId)) {
+      room.delete(clientId);
+      if (room.size === 0) {
+        rooms.delete(roomId);
+      } else {
+        // Notify remaining peers
+        room.forEach((peerId) => {
+          clients.get(peerId).send(
+            JSON.stringify({
+              type: "peer_left",
+              peerId: clientId,
+            })
+          );
+        });
+      }
+    }
+  });
+}
+
+console.log("Signaling server running on port 8080");
